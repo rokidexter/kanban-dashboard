@@ -188,11 +188,39 @@ pipeline {
                         --restart unless-stopped \
                         ${env.PREVIOUS_IMAGE}
 
-                        sleep 5
+                        echo "Waiting for rollback container health..."
 
-                        docker inspect \
-                        --format='{{.State.Health.Status}}' \
-                        ${CONTAINER_NAME}
+                        for i in \$(seq 1 12); do
+
+                            STATUS=\$(docker inspect \
+                                --format='{{.State.Health.Status}}' \
+                                ${CONTAINER_NAME} 2>/dev/null || echo "starting")
+
+                            echo "Rollback health status: \${STATUS}"
+
+                            if [ "\${STATUS}" = "healthy" ]; then
+                                echo "Rollback container is healthy."
+                                break
+                            fi
+
+                            if [ "\${STATUS}" = "unhealthy" ]; then
+                                echo "Rollback container is unhealthy."
+                                exit 1
+                            fi
+
+                            sleep 5
+                        done
+
+                        STATUS=\$(docker inspect \
+                            --format='{{.State.Health.Status}}' \
+                            ${CONTAINER_NAME})
+
+                        if [ "\${STATUS}" != "healthy" ]; then
+                            echo "Rollback health check timed out."
+                            exit 1
+                        fi
+
+                        echo "Checking rolled-back application..."
 
                         curl --fail --max-time 10 http://localhost/
 
