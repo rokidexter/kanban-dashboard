@@ -35,6 +35,26 @@ pipeline {
             }
         }
 
+        stage('Save Current Version') {
+            steps {
+                script {
+                    env.PREVIOUS_IMAGE = sh(
+                        script: """
+                            docker inspect ${CONTAINER_NAME} \
+                            --format='{{.Config.Image}}' 2>/dev/null || true
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (env.PREVIOUS_IMAGE) {
+                        echo "Previous image: ${env.PREVIOUS_IMAGE}"
+                    } else {
+                        echo "No previous deployment found."
+                    }
+                }
+            }
+        }
+
         stage('Docker Build') {
             steps {
                 sh '''
@@ -83,9 +103,7 @@ pipeline {
                     docker pull \
                         ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
-                    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-                        docker rm -f ${CONTAINER_NAME}
-                    fi
+                    docker rm -f ${CONTAINER_NAME} || true
 
                     docker run -d \
                         --name ${CONTAINER_NAME} \
@@ -145,6 +163,39 @@ pipeline {
         }
 
         failure {
+            echo "Deployment failed. Starting rollback..."
+
+            script {
+                if (env.PREVIOUS_IMAGE?.trim()) {
+
+                    sh """
+                        echo "Rolling back to: ${env.PREVIOUS_IMAGE}"
+
+                        docker rm -f ${CONTAINER_NAME} || true
+
+                        docker run -d \
+                            --name ${CONTAINER_NAME} \
+                            -p ${HOST_PORT}:80 \
+                            --restart unless-stopped \
+                            ${env.PREVIOUS_IMAGE}
+
+                        sleep 10
+
+                        docker inspect \
+                            --format='Rollback health: {{.State.Health.Status}}' \
+                            ${CONTAINER_NAME} || true
+
+                        curl --fail --max-time 10 \
+                            http://localhost/
+
+                        echo "Rollback completed successfully."
+                    """
+
+                } else {
+                    echo "No previous image available. Rollback skipped."
+                }
+            }
+
             echo "CI/CD pipeline failed."
         }
     }
