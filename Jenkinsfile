@@ -12,12 +12,6 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Set Image Tag') {
             steps {
                 script {
@@ -106,6 +100,7 @@ pipeline {
                     ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
                     echo "Stopping current container..."
+
                     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
                     echo "Starting new container..."
@@ -167,12 +162,16 @@ pipeline {
     post {
 
         success {
-            echo "CI/CD pipeline completed successfully."
+            echo "=========================================="
+            echo "CI/CD PIPELINE COMPLETED SUCCESSFULLY"
+            echo "=========================================="
             echo "Deployed image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
         }
 
         failure {
-            echo "CI/CD pipeline failed."
+            echo "=========================================="
+            echo "CI/CD PIPELINE FAILED"
+            echo "=========================================="
 
             script {
 
@@ -192,23 +191,19 @@ pipeline {
 
                         docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
-
                         echo "Pulling previous image..."
 
                         docker pull ${env.PREVIOUS_IMAGE}
 
-
                         echo "Starting previous version..."
 
                         docker run -d \
-                            --name ${CONTAINER_NAME} \
-                            -p ${CONTAINER_PORT}:80 \
-                            --restart unless-stopped \
-                            ${env.PREVIOUS_IMAGE}
-
+                        --name ${CONTAINER_NAME} \
+                        -p ${CONTAINER_PORT}:80 \
+                        --restart unless-stopped \
+                        ${env.PREVIOUS_IMAGE}
 
                         echo "Waiting for rollback container to become healthy..."
-
 
                         ROLLBACK_SUCCESS=false
 
@@ -220,90 +215,50 @@ pipeline {
 
                             echo "Rollback health status: \${STATUS}"
 
-
                             if [ "\${STATUS}" = "healthy" ]; then
-
                                 echo "Rollback container is healthy."
-
                                 ROLLBACK_SUCCESS=true
-
                                 break
-
                             fi
-
 
                             if [ "\${STATUS}" = "unhealthy" ]; then
-
                                 echo "Rollback container is unhealthy."
-
-                                docker logs ${CONTAINER_NAME} || true
-
-                                exit 1
-
+                                break
                             fi
-
-
-                            if [ "\$i" -eq 12 ]; then
-
-                                echo "Rollback health check timed out."
-
-                                docker logs ${CONTAINER_NAME} || true
-
-                                exit 1
-
-                            fi
-
 
                             sleep 5
-
                         done
 
-
                         if [ "\${ROLLBACK_SUCCESS}" != "true" ]; then
-
-                            echo "Rollback failed."
-
+                            echo "Rollback health check failed."
                             exit 1
-
                         fi
-
 
                         echo "Verifying application after rollback..."
 
-
                         curl --fail --max-time 10 http://localhost/
-
 
                         echo "Application is responding after rollback."
 
-
                         echo "Verifying restored image..."
-
 
                         CURRENT_IMAGE=\$(docker inspect \
                             ${CONTAINER_NAME} \
                             --format='{{.Config.Image}}')
 
-
                         echo "Current running image: \${CURRENT_IMAGE}"
-
                         echo "Expected image: ${env.PREVIOUS_IMAGE}"
 
-
                         if [ "\${CURRENT_IMAGE}" != "${env.PREVIOUS_IMAGE}" ]; then
-
                             echo "ERROR: Rollback image verification failed."
-
                             exit 1
-
                         fi
-
 
                         echo "=========================================="
                         echo "ROLLBACK COMPLETED SUCCESSFULLY"
                         echo "=========================================="
 
-                        echo "Restored image: ${env.PREVIOUS_IMAGE}"
+                        echo "Restored image: \${CURRENT_IMAGE}"
                     """
 
                 } else {
