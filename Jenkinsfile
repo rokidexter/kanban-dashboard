@@ -105,7 +105,10 @@ pipeline {
                     docker pull \
                     ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
+                    echo "Stopping current container..."
                     docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+                    echo "Starting new container..."
 
                     docker run -d \
                     --name ${CONTAINER_NAME} \
@@ -172,23 +175,42 @@ pipeline {
             echo "CI/CD pipeline failed."
 
             script {
+
                 if (env.PREVIOUS_IMAGE?.trim()) {
 
-                    echo "Starting automatic rollback..."
-                    echo "Rolling back to: ${env.PREVIOUS_IMAGE}"
+                    echo "=========================================="
+                    echo "STARTING AUTOMATIC ROLLBACK"
+                    echo "=========================================="
+
+                    echo "Failed image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+                    echo "Previous image: ${env.PREVIOUS_IMAGE}"
 
                     sh """
+                        set -e
+
+                        echo "Stopping failed deployment..."
+
                         docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+
+                        echo "Pulling previous image..."
 
                         docker pull ${env.PREVIOUS_IMAGE}
 
-                        docker run -d \
-                        --name ${CONTAINER_NAME} \
-                        -p ${CONTAINER_PORT}:80 \
-                        --restart unless-stopped \
-                        ${env.PREVIOUS_IMAGE}
 
-                        echo "Waiting for rollback container health..."
+                        echo "Starting previous version..."
+
+                        docker run -d \
+                            --name ${CONTAINER_NAME} \
+                            -p ${CONTAINER_PORT}:80 \
+                            --restart unless-stopped \
+                            ${env.PREVIOUS_IMAGE}
+
+
+                        echo "Waiting for rollback container to become healthy..."
+
+
+                        ROLLBACK_SUCCESS=false
 
                         for i in \$(seq 1 12); do
 
@@ -198,37 +220,97 @@ pipeline {
 
                             echo "Rollback health status: \${STATUS}"
 
+
                             if [ "\${STATUS}" = "healthy" ]; then
+
                                 echo "Rollback container is healthy."
+
+                                ROLLBACK_SUCCESS=true
+
                                 break
+
                             fi
+
 
                             if [ "\${STATUS}" = "unhealthy" ]; then
+
                                 echo "Rollback container is unhealthy."
+
+                                docker logs ${CONTAINER_NAME} || true
+
                                 exit 1
+
                             fi
 
+
+                            if [ "\$i" -eq 12 ]; then
+
+                                echo "Rollback health check timed out."
+
+                                docker logs ${CONTAINER_NAME} || true
+
+                                exit 1
+
+                            fi
+
+
                             sleep 5
+
                         done
 
-                        STATUS=\$(docker inspect \
-                            --format='{{.State.Health.Status}}' \
-                            ${CONTAINER_NAME})
 
-                        if [ "\${STATUS}" != "healthy" ]; then
-                            echo "Rollback health check timed out."
+                        if [ "\${ROLLBACK_SUCCESS}" != "true" ]; then
+
+                            echo "Rollback failed."
+
                             exit 1
+
                         fi
 
-                        echo "Checking rolled-back application..."
+
+                        echo "Verifying application after rollback..."
+
 
                         curl --fail --max-time 10 http://localhost/
 
-                        echo "Rollback completed successfully."
+
+                        echo "Application is responding after rollback."
+
+
+                        echo "Verifying restored image..."
+
+
+                        CURRENT_IMAGE=\$(docker inspect \
+                            ${CONTAINER_NAME} \
+                            --format='{{.Config.Image}}')
+
+
+                        echo "Current running image: \${CURRENT_IMAGE}"
+
+                        echo "Expected image: ${env.PREVIOUS_IMAGE}"
+
+
+                        if [ "\${CURRENT_IMAGE}" != "${env.PREVIOUS_IMAGE}" ]; then
+
+                            echo "ERROR: Rollback image verification failed."
+
+                            exit 1
+
+                        fi
+
+
+                        echo "=========================================="
+                        echo "ROLLBACK COMPLETED SUCCESSFULLY"
+                        echo "=========================================="
+
+                        echo "Restored image: ${env.PREVIOUS_IMAGE}"
                     """
 
                 } else {
-                    echo "No previous image available. Rollback skipped."
+
+                    echo "No previous image available."
+                    echo "Rollback skipped."
+
                 }
             }
         }

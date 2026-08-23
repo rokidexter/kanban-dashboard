@@ -46,8 +46,8 @@ USER nginx
 EXPOSE 80
 
 # Container health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/this-page-does-not-exist || exit 1
-    
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=2 \
+    CMD exit 1
+     
 # Start Nginx
 CMD ["nginx", "-g", "daemon off;"]
