@@ -7,7 +7,7 @@ pipeline {
         ECR_REGISTRY = "382170164329.dkr.ecr.ap-south-1.amazonaws.com"
         ECR_REPOSITORY = "kanban-dashboard"
         CONTAINER_NAME = "kanban-dashboard-ecr"
-        HOST_PORT = "80"
+        CONTAINER_PORT = "80"
     }
 
     stages {
@@ -21,15 +21,15 @@ pipeline {
         stage('Set Image Tag') {
             steps {
                 script {
-                    env.GIT_SHA = sh(
+                    def gitSha = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
 
-                    env.IMAGE_TAG = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
+                    env.IMAGE_TAG = "${gitSha}-${BUILD_NUMBER}"
 
-                    echo "Git SHA: ${env.GIT_SHA}"
-                    echo "Build Number: ${env.BUILD_NUMBER}"
+                    echo "Git SHA: ${gitSha}"
+                    echo "Build Number: ${BUILD_NUMBER}"
                     echo "Image Tag: ${env.IMAGE_TAG}"
                 }
             }
@@ -38,7 +38,7 @@ pipeline {
         stage('Save Current Version') {
             steps {
                 script {
-                    env.PREVIOUS_IMAGE = sh(
+                    def previousImage = sh(
                         script: """
                             docker inspect ${CONTAINER_NAME} \
                             --format='{{.Config.Image}}' 2>/dev/null || true
@@ -46,8 +46,10 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    if (env.PREVIOUS_IMAGE) {
-                        echo "Previous image: ${env.PREVIOUS_IMAGE}"
+                    env.PREVIOUS_IMAGE = previousImage
+
+                    if (previousImage) {
+                        echo "Previous image: ${previousImage}"
                     } else {
                         echo "No previous deployment found."
                     }
@@ -59,7 +61,7 @@ pipeline {
             steps {
                 sh '''
                     docker build \
-                        -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    -t ${IMAGE_NAME}:${IMAGE_TAG} .
                 '''
             }
         }
@@ -68,10 +70,10 @@ pipeline {
             steps {
                 sh '''
                     aws ecr get-login-password \
-                        --region ${AWS_REGION} | \
+                    --region ${AWS_REGION} | \
                     docker login \
-                        --username AWS \
-                        --password-stdin ${ECR_REGISTRY}
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
@@ -80,8 +82,8 @@ pipeline {
             steps {
                 sh '''
                     docker tag \
-                        ${IMAGE_NAME}:${IMAGE_TAG} \
-                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    ${IMAGE_NAME}:${IMAGE_TAG} \
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
@@ -90,7 +92,7 @@ pipeline {
             steps {
                 sh '''
                     docker push \
-                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
@@ -101,15 +103,15 @@ pipeline {
                     echo "Deploying ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
                     docker pull \
-                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
-                    docker rm -f ${CONTAINER_NAME} || true
+                    docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
                     docker run -d \
-                        --name ${CONTAINER_NAME} \
-                        -p ${HOST_PORT}:80 \
-                        --restart unless-stopped \
-                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    --name ${CONTAINER_NAME} \
+                    -p ${CONTAINER_PORT}:80 \
+                    --restart unless-stopped \
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
@@ -123,7 +125,7 @@ pipeline {
 
                         STATUS=$(docker inspect \
                             --format='{{.State.Health.Status}}' \
-                            ${CONTAINER_NAME} 2>/dev/null || true)
+                            ${CONTAINER_NAME} 2>/dev/null || echo "starting")
 
                         echo "Health status: ${STATUS}"
 
@@ -132,10 +134,15 @@ pipeline {
                             exit 0
                         fi
 
+                        if [ "${STATUS}" = "unhealthy" ]; then
+                            echo "Container is unhealthy."
+                            exit 1
+                        fi
+
                         sleep 5
                     done
 
-                    echo "Container failed health check."
+                    echo "Health check timed out."
                     exit 1
                 '''
             }
@@ -146,8 +153,7 @@ pipeline {
                 sh '''
                     echo "Checking application..."
 
-                    curl --fail --max-time 10 \
-                        http://localhost/
+                    curl --fail --max-time 10 http://localhost/
 
                     echo "Application is responding successfully."
                 '''
@@ -163,30 +169,32 @@ pipeline {
         }
 
         failure {
-            echo "Deployment failed. Starting rollback..."
+            echo "CI/CD pipeline failed."
 
             script {
                 if (env.PREVIOUS_IMAGE?.trim()) {
 
-                    sh """
-                        echo "Rolling back to: ${env.PREVIOUS_IMAGE}"
+                    echo "Starting automatic rollback..."
+                    echo "Rolling back to: ${env.PREVIOUS_IMAGE}"
 
-                        docker rm -f ${CONTAINER_NAME} || true
+                    sh """
+                        docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+                        docker pull ${env.PREVIOUS_IMAGE}
 
                         docker run -d \
-                            --name ${CONTAINER_NAME} \
-                            -p ${HOST_PORT}:80 \
-                            --restart unless-stopped \
-                            ${env.PREVIOUS_IMAGE}
+                        --name ${CONTAINER_NAME} \
+                        -p ${CONTAINER_PORT}:80 \
+                        --restart unless-stopped \
+                        ${env.PREVIOUS_IMAGE}
 
-                        sleep 10
+                        sleep 5
 
                         docker inspect \
-                            --format='Rollback health: {{.State.Health.Status}}' \
-                            ${CONTAINER_NAME} || true
+                        --format='{{.State.Health.Status}}' \
+                        ${CONTAINER_NAME}
 
-                        curl --fail --max-time 10 \
-                            http://localhost/
+                        curl --fail --max-time 10 http://localhost/
 
                         echo "Rollback completed successfully."
                     """
@@ -195,8 +203,6 @@ pipeline {
                     echo "No previous image available. Rollback skipped."
                 }
             }
-
-            echo "CI/CD pipeline failed."
         }
     }
 }
